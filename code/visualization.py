@@ -35,5 +35,5 @@ def imshow(img, denormalize=False):
         img = np.clip(img, 0, 1)
         
 
-    plt.imshow(img)
+    plt.imshow(img,cmap='gray')
     plt.show()
