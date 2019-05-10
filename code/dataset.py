@@ -9,7 +9,10 @@ import nibabel as nib
 
 from augmentation import *
 from albumentations import *
+from albumentations.pytorch import *
 from visualization import *
+
+image_size = (256,256)
 
 class ACDCDataset(Dataset):
     def __init__(self, data_path="../data/", data_type = "train", transform_both=None, transform_image=None):
@@ -36,7 +39,7 @@ class ACDCDataset(Dataset):
         if self.data_type=="validation":
             self.data_type="train" # train and validation share the same folder
         patient_path = self.data_path+self.data_type+"/"+"patient"+'{:03d}'.format(int(self.data[idx]))
-        patient_info = patient_path + "/info.cfg"
+        patient_info = patient_path + "/Info.cfg"
         # parse the txt to store the necessary information of patient
         file = open(patient_info, 'r').readlines()
         ED_frame = int(file[0].split(":")[1])
@@ -55,15 +58,17 @@ class ACDCDataset(Dataset):
         # get img from file
         img_ED = nib.load(img_path_ED).get_data()
         img_ES = nib.load(img_path_ES).get_data()
-#         print(img_ED.dtype)
-        img_ED = pad_nd_image(img_ED,(256,256,10))
-        img_ES = pad_nd_image(img_ES,(256,256,10))
-        
+#         img_ED = pad_nd_image(img_ED,image_size)
+#         img_ES = pad_nd_image(img_ES,image_size)
+        # normalize
+        img_ED = img_ED/np.max(img_ED)
+        img_ES = img_ES/np.max(img_ES)
+
         # parse label
         label_ED = nib.load(label_path_ED).get_data()
         label_ES = nib.load(label_path_ES).get_data()        
-        label_ED = pad_nd_image(label_ED,(256,256,10))
-        label_ES = pad_nd_image(label_ES,(256,256,10))
+#         label_ED = pad_nd_image(label_ED,image_size)
+#         label_ES = pad_nd_image(label_ES,image_size)
         
 #         print(img_ED.shape)
 #         print(img_ES.shape)
@@ -83,112 +88,96 @@ class ACDCDataset(Dataset):
             img_ED = augmented_ED['image']
             augmented_ES = self.transform_image(image=img_ES)
             img_ES = augmented_ES['image']
-            
-        img_ED = torch.from_numpy(img_ED).permute(2, 0, 1)
-        img_ES = torch.from_numpy(img_ES).permute(2, 0, 1)
+        
+        # clip to 0 to 1
+        img_ED = np.clip(img_ED, 0, 1)
+        img_ES = np.clip(img_ES, 0, 1)
+        
+        # zero-centre
+        img_ED = (img_ED-0.5)/0.5
+        img_ES = (img_ES-0.5)/0.5
+        
+        img_ED = torch.from_numpy(img_ED).permute(2, 0, 1).float()
+        img_ES = torch.from_numpy(img_ES).permute(2, 0, 1).float()
+        img = torch.cat((img_ED,img_ES),0)
+#         print(torch.max(img_ED))
+#         print(torch.min(img_ED))
         label_ED = torch.from_numpy(label_ED).permute(2, 0, 1)
         label_ES = torch.from_numpy(label_ES).permute(2, 0, 1)
-        
-        return img_ED,img_ES,label_ED,label_ES
-    
-class ACDCDataset_test(ACDCDataset):
-    def __getitem__(self, idx):
-        # parse info file
-        patient_path = self.data_path+self.data_type+"/"+"patient"+'{:03d}'.format(int(self.data[idx]))
-        patient_info = patient_path + "/info.cfg"
-        # parse the txt to store the necessary information of patient
-        file = open(patient_info, 'r').readlines()
-        ED_frame = int(file[0].split(":")[1])
-        ES_frame = int(file[1].split(":")[1])
-        
-        # path
-        img_path_ED = patient_path +"/patient"+'{:03d}'.format(int(self.data[idx]))+"_frame{:02d}.nii.gz".format(ED_frame)
-        img_path_ES = patient_path +"/patient"+'{:03d}'.format(int(self.data[idx]))+"_frame{:02d}.nii.gz".format(ES_frame)
+        label = torch.cat((label_ED,label_ES),0)
+#         print(torch.max(label_ED))
+#         print(torch.min(label_ES))
 
-        # get img from file
-        img_ED = nib.load(img_path_ED).get_data()
-        img_ES = nib.load(img_path_ES).get_data()
-#         print(img_ED.dtype)
-        img_ED = pad_nd_image(img_ED,(256,256,10))
-        img_ES = pad_nd_image(img_ES,(256,256,10))
-
-        if self.transform_image is not None:
-            augmented_ED = self.transform_image(image=img_ED)
-            img_ED = augmented_ED['image']
-            augmented_ES = self.transform_image(image=img_ES)
-            img_ES = augmented_ES['image']
-
-            
-        img_ED = torch.from_numpy(img_ED).permute(2, 0, 1)
-        img_ES = torch.from_numpy(img_ES).permute(2, 0, 1)
+        sample = {'img':img,'label':label, 'indx':idx}
         
-        return img_ED,img_ES
+        return sample
 
 if __name__ == "__main__":
     train_both_aug = Compose([
-        RandomCrop(height=256, width=256, p=1)
+        PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=0,p=1),
+        RandomCrop(height=256, width=256, p=1),
+        Cutout(num_holes=8,p=0.5),
+        OneOf([
+            ShiftScaleRotate(p=0.6),
+            HorizontalFlip(p=0.8),
+            VerticalFlip(p=0.8)
+        ])
     ])
     train_img_aug = Compose([
-        Normalize(p=1,mean=np.array([0.5,]),std=np.array([0.5,])),
-#         RandomBrightnessContrast(brightness_limit=1.0, contrast_limit=1.0,p=1.0),
-#         RandomGamma(p=1)
-#         Cutout(p=1)
-#         ShiftScaleRotate(p=1)
-        
+        OneOf([
+            RandomBrightnessContrast(brightness_limit=(-0.2,0.2), contrast_limit=(-0.5,0.5),p=0.9),
+            RandomGamma(gamma_limit=(50,200),p=0.8)
+        ]),
     ])
     
     
     val_both_aug = Compose([
+        PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=0,p=1),
         RandomCrop(height=256, width=256, p=1)
     ])
-    val_img_aug = Compose([
-        Normalize(p=1,mean=np.array([0.5,]),std=np.array([0.5,]))
-    ])
-    
-    test_img_aug = Compose([
-        RandomCrop(height=256, width=256, p=1),
-        Normalize(p=1,mean=np.array([0.5,]),std=np.array([0.5,]))
-    ])
-    
-    dataset=ACDCDataset(data_type="train",transform_both=train_both_aug,transform_image=train_img_aug)
-    idx = 0
-    dataset[idx]
-    plt.imshow(dataset[idx][0].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()    
-    plt.imshow(dataset[idx][1].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    plt.imshow(dataset[idx][2].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    plt.imshow(dataset[idx][3].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    
-    print(dataset[idx][0].shape)
-    print(dataset[idx][1].shape)
-    print(dataset[idx][2].shape)
-    print(dataset[idx][3].shape)
-    
-    dataset=ACDCDataset(data_type="validation",transform_both=val_both_aug,transform_image=val_img_aug)
-    idx = 0
-    dataset[idx]
-    plt.imshow(dataset[idx][0].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()    
-    plt.imshow(dataset[idx][1].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    plt.imshow(dataset[idx][2].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    plt.imshow(dataset[idx][3].permute(1,2,0)[:,:,3],cmap='gray')
-    plt.show()
-    
-    print(dataset[idx][0].shape)
-    print(dataset[idx][1].shape)
-    print(dataset[idx][2].shape)
-    print(dataset[idx][3].shape)
 
-    dataset=ACDCDataset_test(data_type="test",transform_image=test_img_aug)
-    idx = 0
-    dataset[idx]
-    imshow(dataset[idx][0].permute(1,2,0)[:,:,3])
-    imshow(dataset[idx][1].permute(1,2,0)[:,:,3])
-    print(dataset[idx][0].shape)
-    print(dataset[idx][1].shape)
+    
+    train_dataset=ACDCDataset(data_type="train",transform_both=train_both_aug,transform_image=train_img_aug)
+    train_generator = DataLoader(train_dataset,shuffle=False,batch_size=1,num_workers=8)
+
+    for i_batch, sample_batch in enumerate(train_generator):
+        img = sample_batch['img'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        label = sample_batch['label'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        
+        print(img.shape)
+        print(label.shape)
+        
+        imshow(img[0,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(label[0,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(img[-1,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(label[-1,:,:,:].permute(1,2,0),denormalize=False)
+        break
+        
+        
+    validation_dataset=ACDCDataset(data_type="validation",transform_both=val_both_aug,transform_image=None)
+    validation_generator = DataLoader(validation_dataset,shuffle=False,batch_size=1,num_workers=8)
+
+    for i_batch, sample_batch in enumerate(validation_generator):
+        img = sample_batch['img'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        label = sample_batch['label'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        
+        print(img.shape)
+        print(label.shape)
+        
+        imshow(img[0,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(label[0,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(img[-1,:,:,:].permute(1,2,0),denormalize=False)
+        imshow(label[-1,:,:,:].permute(1,2,0),denormalize=False)
+        break
+        
+#     test_dataset=ACDCDataset(data_type="test",transform_both=None,transform_image=test_img_aug)
+#     test_generator = DataLoader(validation_dataset,shuffle=True,batch_size=1,num_workers=8)
+
+#     for i_batch, sample_batch in enumerate(test_generator):
+#         img_ED = sample_batch['ED']
+#         img_ES = sample_batch['ES']
+        
+#         imshow(img_ED[0,:,:,:].permute(1,2,0)[:,:,3],denormalize=False)
+#         imshow(img_ES[0,:,:,:].permute(1,2,0)[:,:,3],denormalize=False)
+#         break
         

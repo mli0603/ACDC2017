@@ -8,9 +8,24 @@ from visualization import *
 import random
 import copy
 
+import os
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms.functional as TF
+
+import copy
+import numpy as np
+import random
+from tensorboardX import SummaryWriter
+
+from albumentations import *
+from unet import *
+from dataset import *
+from visualization import *
+from dice_loss import *
+
 
 # TODO: when training, turn this false
-debug = True
+debug = False
 
 def train(model,device,scheduler,optimizer,dice_loss,train_generator,train_dataset,writer,n_itr):
     # function to train  model for segmentation task
@@ -27,54 +42,53 @@ def train(model,device,scheduler,optimizer,dice_loss,train_generator,train_datas
     model.train()  # Set model to training mode           
 
     running_loss = 0.0
+    tp = torch.zeros(num_class)
+    fp = torch.zeros(num_class)
+    fn = torch.zeros(num_class)
     
-    for i_batch, batch in enumerate(train_generator):
-        # read img and label
-        img_ED = batch[0]
-        img_ES = batch[1]
-        label_ED = batch[2]
-        label_ES = batch[3]
+    for i_batch, sample_batch in enumerate(train_generator):
+        img = sample_batch['img'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        label = sample_batch['label'].permute(1,0,2,3) # change the order so that we have num of image at the first place
         
-        if debug:        
-            # validate if images are parsed correctly
-            print(i_batch, img_ED.shape, img_ES.shape, label_ED.shape, label_ES.shape)
-            sample_img_ED = img_ED[0,3,:,:]
-            sample_img_ES = img_ES[0,3,:,:]
-            sample_label_ED = label_ED[0,3,:,:]
-            sample_label_ES = label_ES[0,3,:,:]
-            imshow(sample_img_ED.permute(1,2,0),denormalize=True)
-            imshow(sample_img_ES.permute(1,2,0),denormalize=True)
-            imshow(sample_label_ED.permute(1,2,0),denormalize=False)
-            imshow(sample_label_ES.permute(1,2,0),denormalize=False)
+        if debug:      
+            print(img.shape)
+            print(label.shape)
+
+            imshow(img[0,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(label[0,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(img[-1,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(label[-1,:,:,:].permute(1,2,0),denormalize=False)       
 
         # transfer to GPU
-        img_ED, label_ED = img_ED.to(device), label_ED.to(device)
-        img_ES, label_ES = img_ES.to(device), label_ES.to(device)
+        img, label = img.to(device), label.to(device)
     
         # zero the parameter gradients
         optimizer.zero_grad()
         
         # forward + backprop + optimize
-        outputs_ED = model(img_ED)
-        loss_ED,_,_ = dice_loss.forward(outputs_ED, label_ED.long())
-        
-        outputs_ES = model(img_ES)
-        loss_ES,_,_ = dice_loss.forward(outputs_ES, label_ES.long())
-        
-        loss = loss_ED + loss_ES
+        outputs = model(img)
+        loss,probas,true_1_hot = dice_loss.forward(outputs, label.long())
         loss.backward()
         optimizer.step()
-
+        loss.detach()
+        
         # statistics
         running_loss += loss.item() * img.size(0)    
         writer.add_scalar('data/training_loss',loss.item(),n_itr)
         n_itr = n_itr + 1
         
+        curr_tp, curr_fp, curr_fn = label_accuracy(probas.cpu(),true_1_hot.cpu())
+        tp += curr_tp
+        fp += curr_fp
+        fn += curr_fn
+        
         if debug:
             break
                 
     train_loss = running_loss / len(train_dataset)
-    print('Epoch Loss: {:.4f}'.format(train_loss))
+    print('Training Loss: {:.4f}'.format(train_loss))
+    for i_class, (tp_val, fp_val, fn_val) in enumerate(zip(tp, fp, fn)):
+        print ('{} Class, True Pos {}, False Pos {}, False Neg {}, Dice score {:1.2f}'.format(i_class, tp_val,fp_val,fn_val,(2*tp_val + 1e-7)/ (2*tp_val+fp_val+fn_val+1e-7)))
     print('-' * 10)
     
     return train_loss, n_itr
@@ -87,30 +101,32 @@ def validate(model,device,dice_loss,num_class,validation_generator,validation_da
     tp = torch.zeros(num_class)
     fp = torch.zeros(num_class)
     fn = torch.zeros(num_class)
+    worst_dice = 1.0
+    best_dice = 0.0
+    worst_indx = 0
+    best_indx = 0
     
-    for i_batch, batch in enumerate(validation_generator):
-        # read img and label
-        img = batch[0]
-        label = batch[1]
+    for i_batch, sample_batch in enumerate(validation_generator):
+        img = sample_batch['img'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        label = sample_batch['label'].permute(1,0,2,3) # change the order so that we have num of image at the first place
+        indx = sample_batch['indx']
+        
+        if debug:      
+            print(img.shape)
+            print(label.shape)
 
-        if debug:
-            # validate if images are parsed correctly
-            print(i_batch, img.shape, label.shape)
-            sample_img = img[0,:,:,:]
-            sample_label = label[0,:,:,:]
-            sample_colorlabel = validation_dataset.label_converter.label2color(sample_label.permute(1,2,0))
-            imshow(sample_img.permute(1,2,0),denormalize=True)
-            imshow(sample_colorlabel)
+            imshow(img[0,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(label[0,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(img[-1,:,:,:].permute(1,2,0),denormalize=False)
+            imshow(label[-1,:,:,:].permute(1,2,0),denormalize=False)
         
         # transfer to GPU
         img, label = img.to(device), label.to(device)
-
-        # forward
+   
+        # forward 
         outputs = model(img)
-        # get loss
-#         loss, probas, true_1_hot = dice_loss_max(outputs,label.long().squeeze(1))
         loss, probas, true_1_hot = dice_loss.forward(outputs, label.long())
-
+        
         # statistics
         validation_loss += loss.item() * img.size(0)
         writer.add_scalar('data/validation_loss',loss.item(),n_itr)
@@ -120,6 +136,15 @@ def validate(model,device,dice_loss,num_class,validation_generator,validation_da
         tp += curr_tp
         fp += curr_fp
         fn += curr_fn
+        curr_dice = ((2*curr_tp + 1e-7)/ (2*curr_tp+curr_fp+curr_fn+1e-7)).mean()
+        
+        # find best and worst
+        if worst_dice > curr_dice:
+            worst_indx = indx
+            worst_dice = curr_dice
+        if best_dice < curr_dice:
+            best_indx = indx
+            best_dice = curr_dice
         
         if debug:
             break
@@ -127,69 +152,10 @@ def validate(model,device,dice_loss,num_class,validation_generator,validation_da
     validation_loss = validation_loss / len(validation_dataset)
     print('Vaildation Loss: {:.4f}'.format(validation_loss))
     for i_class, (tp_val, fp_val, fn_val) in enumerate(zip(tp, fp, fn)):
-        print ('{} Class, True Pos {}, False Pos {}, Flase Neg {}'.format(i_class, tp_val,fp_val,fn_val))
+        print ('{} Class, True Pos {}, False Pos {}, False Neg {}, Dice score {:1.2f}'.format(i_class, tp_val,fp_val,fn_val,(2*tp_val + 1e-7)/ (2*tp_val+fp_val+fn_val+1e-7)))
     print('-' * 10)
     
-    return validation_loss, tp, fp, fn, n_itr
-
-
-def test(model,device,dice_loss,num_class,test_generator,test_dataset,writer):
-    ########################### Test #####################################
-    model.eval()  # Set model to validation mode   
-    test_loss = 0.0
-    tp = torch.zeros(num_class)
-    fp = torch.zeros(num_class)
-    fn = torch.zeros(num_class)
-    
-    for i_batch, batch in enumerate(test_generator):
-        # read in images and masks
-        img = batch[0]
-        label = batch[1]
-        
-        # transfer to GPU
-        img, label = img.to(device), label.to(device)
-
-        # forward
-        outputs = model(img)
-        # get loss
-#         loss, probas, true_1_hot = dice_loss_max(outputs,label.long().squeeze(1))
-        loss, probas, true_1_hot = dice_loss.forward(outputs, label.long())
-
-        # statistics
-        test_loss += loss.item() * img.size(0)        
-        curr_tp, curr_fp, curr_fn = label_accuracy(probas.cpu(),true_1_hot.cpu())
-        tp += curr_tp
-        fp += curr_fp
-        fn += curr_fn 
-                    
-        if debug:
-            break
-            
-    dice_score = (2*tp + 1e-7)/ (2*tp+fp+fn+1e-7)
-    dice_score = dice_score.mean()
-    print('Dice Score: {:.4f}'.format(dice_score.item()))
-    for i_class, (tp_val, fp_val, fn_val) in enumerate(zip(tp, fp, fn)):
-        print ('{} Class, True Pos {}, False Pos {}, Flase Neg {}'.format(i_class, tp_val,fp_val,fn_val))
-    print('-' * 10)
-    
-    # visualize current prediction
-    sample = test_dataset.__getitem__(0)
-    img = sample[0]*0.5+0.5
-    label = sample[1]
-    tmp_img = sample[0].reshape(1,3,256,320)
-    pred = functional.softmax(model(tmp_img.cuda()), dim=1)
-    pred_label = torch.max(pred,dim=1)[1]
-    pred_label = pred_label.type(label.type())
-    # to plot
-    tp_img = np.array(img)
-    tp_label = test_dataset.label_converter.label2color(label.permute(1,2,0)).transpose(2,0,1)
-    tp_pred = test_dataset.label_converter.label2color(pred_label.permute(1,2,0)).transpose(2,0,1)
-
-    writer.add_image('Test Input', tp_img, 0)
-    writer.add_image('Test Label', tp_label, 0)
-    writer.add_image('Test Prediction', tp_pred, 0)
-    
-    return dice_score
+    return validation_loss, tp, fp, fn, n_itr,[worst_indx,worst_dice],[best_indx,best_dice]
 
 def run_training(model,device,num_class,scheduler,optimizer,dice_loss,num_epochs,train_generator,train_dataset,validation_generator,validation_dataset,writer):
     print("Training Started!")
@@ -207,34 +173,107 @@ def run_training(model,device,num_class,scheduler,optimizer,dice_loss,num_epochs
 
         # validate
         with torch.no_grad():
-            validation_loss, tp, fp, fn, val_iter = validate(model,device,dice_loss,num_class,validation_generator,validation_dataset,writer,val_iter)
+            validation_loss, tp, fp, fn, val_iter, worst,best = validate(model,device,dice_loss,num_class,validation_generator,validation_dataset,writer,val_iter)
             epoch_acc = (2*tp + 1e-7)/ (2*tp+fp+fn+1e-7)
             epoch_acc = epoch_acc.mean()
     
             # loss
             writer.add_scalar('data/Training Loss (per epoch)',train_loss,epoch)
             writer.add_scalar('data/Validation Loss (per epoch)',validation_loss,epoch)
-
-            # randomly show one validation image 
-            sample = validation_dataset.__getitem__(random.randint(0,len(validation_dataset)-1))
-            img = sample[0]*0.5+0.5
-            label = sample[1]
-            tmp_img = sample[0].reshape(1,3,256,320)
+            
+            # show best and worst 
+            print("worst performance: dice {:.2f}, idx {}".format(worst[1],worst[0].item()))
+            sample = validation_dataset.__getitem__(worst[0])
+            img = sample['img'][0,:,:]
+            label = sample['label'][0,:,:]
+            tmp_img = img.reshape(1,1,256,256)
             pred = functional.softmax(model(tmp_img.cuda()), dim=1)
             pred_label = torch.max(pred,dim=1)[1]
             pred_label = pred_label.type(label.type())
             # to plot
             tp_img = np.array(img)
-            tp_label = train_dataset.label_converter.label2color(label.permute(1,2,0)).transpose(2,0,1)
-            tp_pred = train_dataset.label_converter.label2color(pred_label.permute(1,2,0)).transpose(2,0,1)
+            tp_label = np.array(label)
+            tp_pred = np.array(pred_label.cpu())
+            imshow(tp_img)
+            imshow(tp_label)
+            imshow(tp_pred)
 
-            writer.add_image('Input', tp_img, epoch)
-            writer.add_image('Label', tp_label, epoch)
-            writer.add_image('Prediction', tp_pred, epoch)
+            print("best performance: dice {:.2f}, idx {}".format(best[1],best[0].item()))
+            sample = validation_dataset.__getitem__(best[0])
+            img = sample['img'][0,:,:]
+            label = sample['label'][0,:,:]
+            tmp_img = img.reshape(1,1,256,256)
+            pred = functional.softmax(model(tmp_img.cuda()), dim=1)
+            pred_label = torch.max(pred,dim=1)[1]
+            pred_label = pred_label.type(label.type())
+            # to plot
+            tp_img = np.array(img)
+            tp_label = np.array(label)
+            tp_pred = np.array(pred_label.cpu())
+            imshow(tp_img)
+            imshow(tp_label)
+            imshow(tp_pred)
 
             # deep copy the model
             if epoch_acc > best_acc:
                 best_acc = epoch_acc
                 best_model_wts = copy.deepcopy(model.state_dict())
+                print('Dice Score: {:.4f}'.format(best_acc.item()))
+                
+            print('-' * 10)
             
-    return best_model_wts
+    return best_model_wts, best_acc
+
+
+if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"]="2"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    train_batch_size = 1
+    validation_batch_size = 1
+    learning_rate = 0.001
+    num_epochs = 70
+    num_class = 12
+    writer = SummaryWriter()
+    
+    model = unet(useBN=True)
+    model.to(device)
+    
+    dice_loss = DICELoss(np.ones((num_class,1))) 
+    dice_loss.to(device)
+    
+    # intialize optimizer and lr decay
+    optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    
+    train_both_aug = Compose([
+        PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=0,p=1),
+        RandomCrop(height=256, width=256, p=1),
+        Cutout(p=0.5),
+        OneOf([
+            ShiftScaleRotate(p=0.7),
+            HorizontalFlip(p=0.8),
+            VerticalFlip(p=0.8)
+        ])
+    ])
+    train_img_aug = Compose([
+#         Normalize(p=1,mean=np.array([0.5,]),std=np.array([0.5,])),
+        OneOf([
+            RandomBrightnessContrast(brightness_limit=1, contrast_limit=1,p=0.5),
+            RandomGamma(p=0.5)]),
+    ])
+    
+    
+    val_both_aug = Compose([
+        PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=0,p=1),
+        RandomCrop(height=256, width=256, p=1)
+    ])
+
+    train_dataset=ACDCDataset(data_type="train",transform_both=train_both_aug,transform_image=None)
+    validation_dataset=ACDCDataset(data_type="validation",transform_both=val_both_aug,transform_image=None)
+    
+    # intialize the dataloader
+    train_generator = DataLoader(train_dataset,shuffle=True,batch_size=train_batch_size,num_workers=8)
+    validation_generator = DataLoader(validation_dataset,shuffle=True,batch_size=validation_batch_size,num_workers=8)
+    
+    train(model,device,scheduler,optimizer,dice_loss,train_generator,train_dataset,writer,0)

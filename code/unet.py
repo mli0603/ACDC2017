@@ -36,35 +36,35 @@ def upsample(ch_coarse, ch_fine):
   )
 
 # define unet model
-num_class = 12
+num_class = 4
 class unet(nn.Module):
   def __init__(self, useBN=False):
     super(unet, self).__init__()
     # Downgrade stages
-    self.conv1   = add_conv_stage(10, 26, useBN=useBN)
-    self.conv2   = add_conv_stage(26, 52, useBN=useBN)
-    self.conv3   = add_conv_stage(52, 104, useBN=useBN)
-    self.conv4   = add_conv_stage(104, 208, useBN=useBN)
-    self.conv5   = add_conv_stage(208, 416, useBN=useBN)
+    self.conv1   = add_conv_stage(1, 16, useBN=useBN)
+    self.conv2   = add_conv_stage(16, 32, useBN=useBN)
+    self.conv3   = add_conv_stage(32, 64, useBN=useBN)
+    self.conv4   = add_conv_stage(64, 128, useBN=useBN)
+    self.conv5   = add_conv_stage(128, 256, useBN=useBN)
     # Upgrade stages
-    self.conv4m = add_conv_stage(416, 208, useBN=useBN)
-    self.conv3m = add_conv_stage(208, 104, useBN=useBN)
-    self.conv2m = add_conv_stage(104,  52, useBN=useBN)
-    self.conv1m = add_conv_stage( 52,  26, useBN=useBN)
+    self.conv4m = add_conv_stage(256, 128, useBN=useBN)
+    self.conv3m = add_conv_stage(128, 64, useBN=useBN)
+    self.conv2m = add_conv_stage(64,  32, useBN=useBN)
+    self.conv1m = add_conv_stage( 32,  16, useBN=useBN)
     # Maxpool
     self.max_pool = nn.MaxPool2d(2)
     # Upsample layers
-    self.upsample54 = upsample(416, 208)
-    self.upsample43 = upsample(208, 104)
-    self.upsample32 = upsample(104, 52)
-    self.upsample21 = upsample(52, 26)
+    self.upsample54 = upsample(256, 128)
+    self.upsample43 = upsample(128, 64)
+    self.upsample32 = upsample(64, 32)
+    self.upsample21 = upsample(32, 16)
     ## weight initialization
     for m in self.modules():
       if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         if m.bias is not None:
           m.bias.data.zero_()
 
-    self.outconv = nn.Conv2d(26,num_class,1)
+    self.outconv = nn.Conv2d(16,num_class,1)
     
   def forward(self, x):
     conv1_out = self.conv1(x)

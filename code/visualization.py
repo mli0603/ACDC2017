@@ -24,7 +24,7 @@ def imshow_batch(inp, denormalize=False):
 def imshow(img, denormalize=False):   
     # param:
         # img: tensor or np array (W,H,C)
-    img = np.array(img)
+    img = np.array(img.squeeze())
     
     mean = 0.5
     std = 0.5
