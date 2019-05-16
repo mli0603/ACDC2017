@@ -1,5 +1,8 @@
 # ACDC 2017
-MICCAI challenge for ACDC 2017
+MICCAI challenge for ACDC 2017 for course project of EN.533.633 Medical Image Analysis. The proposed appoarch of using 2D AlbuNet and Random Forest Classifiers has won the competition with a test dice score 0.88 and classification accuracy of 80%. This project has also won the Best Presentation Award.
+
+# Report
+TODO
 
 # Instruction for Tensorboardx
 
@@ -7,6 +10,10 @@ pip install tensorboardX
 pip install tensorflow
 
 start tensorboard by "tensorboard --logdir=<dir_to_store_log_file>"
+
+# Notebook
+1. [AlbuNet](code\ResUnet.ipynb)
+2. [UNet](code\Unet.ipynb)
 
 # Logs
 1. vanilla_trained_unet_limited_data: 0.8430
