@@ -13,7 +13,7 @@ start tensorboard by "tensorboard --logdir=<dir_to_store_log_file>"
 
 # Notebook
 1. [AlbuNet](code\ResUnet.ipynb)
-2. [UNet](code\Unet.ipynb)
+2. [UNet](code\UNet.ipynb)
 
 # Logs
 1. vanilla_trained_unet_limited_data: 0.8430
