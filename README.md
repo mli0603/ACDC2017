@@ -2,7 +2,7 @@
 MICCAI challenge for ACDC 2017 for course project of EN.533.633 Medical Image Analysis. The proposed appoarch of using 2D AlbuNet and Random Forest Classifiers has won the competition with a test dice score 0.88 and classification accuracy of 80%. This project has also won the Best Presentation Award.
 
 # Report
-TODO
+See [pdf](materials\MIA_FinalReport_Cardiac)
 
 # Instruction for Tensorboardx
 
